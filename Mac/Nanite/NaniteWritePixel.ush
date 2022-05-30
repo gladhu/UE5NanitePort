@@ -1,0 +1,168 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "../Common.ush"
+#if VIRTUAL_TEXTURE_TARGET
+#include "../VirtualShadowMaps/VirtualShadowMapPageAccessCommon.ush"
+#endif
+
+// Must match ERasterTechnique in NaniteCullRaster.h
+#define RASTER_TECHNIQUE_FALLBACK	0
+#define RASTER_TECHNIQUE_PLATFORM	1
+#define RASTER_TECHNIQUE_NVIDIA		2
+#define RASTER_TECHNIQUE_AMD_DX11	3
+#define RASTER_TECHNIQUE_AMD_DX12	4
+#define RASTER_TECHNIQUE_DEPTHONLY	5
+#define RASTER_TECHNIQUE_INTC_DX11	6
+#define RASTER_TECHNIQUE_INTC_DX12	7
+
+#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_FALLBACK
+#define COHERENCY_FLAG globallycoherent
+#else
+#define COHERENCY_FLAG 
+#endif
+
+// When near clipping is disabled we need to move the geometry 
+#ifndef NEAR_CLIP
+#define NEAR_CLIP 1
+#endif
+
+RWTexture2D<uint>						OutDepthBuffer;
+COHERENCY_FLAG RWTexture2D<UlongType>	OutVisBuffer64;
+
+#if VISUALIZE
+COHERENCY_FLAG RWTexture2D<UlongType>	OutDbgBuffer64;
+RWTexture2D<uint>						OutDbgBuffer32;
+#endif
+
+RWTexture2D<uint> 						LockBuffer;
+
+#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_NVIDIA
+#define NV_SHADER_EXTN_SLOT u7
+#include "/Engine/Shared/ThirdParty/NVIDIA/nvHLSLExtns.h"
+
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX11
+#define AmdDxExtShaderIntrinsicsUAVSlot u7
+#include "/Engine/Shared/ThirdParty/AMD/ags_shader_intrinsics_dx11.h"
+
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX12
+#include "/Engine/Shared/ThirdParty/AMD/ags_shader_intrinsics_dx12.h"
+
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX11
+#define INTEL_SHADER_EXT_UAV_SLOT u7
+#include "/Engine/Shared/ThirdParty/Intel/IntelExtensions.h"
+
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX12
+#define INTEL_SHADER_EXT_UAV_SLOT u7
+#include "/Engine/Shared/ThirdParty/Intel/IntelExtensions12.h"
+#endif
+
+void WritePixel(
+	RWTexture2D<UlongType> OutBuffer,
+	uint PixelValue,
+	uint2 PixelPos,
+	float DeviceZ
+)
+{
+#if !NEAR_CLIP
+	DeviceZ = max(0.0f, DeviceZ);
+#endif
+
+	const uint DepthInt = asuint(DeviceZ);
+
+#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_DEPTHONLY
+	//InterlockedMax( OutDepthBuffer[ PixelPos ], DepthInt );
+     if (OutDepthBuffer[PixelPos] < DepthInt)
+    {
+        OutDepthBuffer[PixelPos] = DepthInt;
+    }
+#else
+	const UlongType Pixel = PackUlongType(uint2(PixelValue, DepthInt));
+
+#if RASTER_TECHNIQUE == RASTER_TECHNIQUE_PLATFORM
+#if COMPILER_SUPPORTS_UINT64_IMAGE_ATOMICS
+	ImageInterlockedMaxUInt64(OutBuffer, PixelPos, Pixel);
+#else
+	#error UNKNOWN_ATOMIC_PLATFORM
+#endif
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_NVIDIA
+	NvInterlockedMaxUint64(OutBuffer, PixelPos, Pixel); 
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX11
+	AmdDxExtShaderIntrinsics_AtomicMaxU64(OutBuffer, PixelPos, Pixel);
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_AMD_DX12
+	AmdExtD3DShaderIntrinsics_AtomicMaxU64(OutBuffer, PixelPos, Pixel);
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX11
+	IntelExt_Init();
+	IntelExt_InterlockedMaxUint64(OutBuffer, PixelPos, Pixel);
+#elif RASTER_TECHNIQUE == RASTER_TECHNIQUE_INTC_DX12
+	IntelExt_Init();
+	IntelExt_InterlockedMaxUint64(OutBuffer, PixelPos, Pixel);
+#else
+	// YOLO SYNC: Surprisingly this seems to work in practice (for compute, not pixel). Tested on 2080Ti and 1080.
+    // uint PrevDepth;
+    // InterlockedMax(LockBuffer[PixelPos], DepthInt, PrevDepth);
+    // if (DepthInt > PrevDepth)
+    // {
+    //     OutBuffer[PixelPos] = Pixel;
+    // }
+    if (LockBuffer[PixelPos] < DepthInt)
+    {
+        LockBuffer[PixelPos] = DepthInt;
+        OutBuffer[PixelPos] = Pixel;
+    }
+#endif
+#endif
+}
+
+
+// Optional per-pixel page translation parameters
+struct WritePixelPageTranslation
+{
+	// TODO: We could optimize this slightly be precomputing the base layer/level offset
+	int TargetLayerIndex;
+	int TargetMipLevel;
+	uint2 PhysicalOffset;
+};
+
+WritePixelPageTranslation InitializeWritePixelPageTranslation()
+{
+	WritePixelPageTranslation Result;
+	Result.TargetLayerIndex = INDEX_NONE;
+	Result.TargetMipLevel = 0;
+	Result.PhysicalOffset = uint2( 0, 0 );
+	return Result;
+}
+
+WritePixelPageTranslation InitializeWritePixelPageTranslation( FNaniteView NaniteView, bool bStaticPage )
+{
+	WritePixelPageTranslation Result;
+	Result.TargetLayerIndex = NaniteView.TargetLayerIndex;
+	Result.TargetMipLevel = NaniteView.TargetMipLevel;
+	Result.PhysicalOffset = bStaticPage ? GetVirtualShadowMapStaticPixelOffset() : uint2( 0, 0 );
+	return Result;
+}
+
+// Write pixel with per-pixel page translation
+void WritePixel(
+	RWTexture2D<UlongType> OutBuffer,
+	uint PixelValue,
+	uint2 PixelPos,
+	float DeviceZ,
+	WritePixelPageTranslation PageTranslation
+)
+{
+#if VIRTUAL_TEXTURE_TARGET
+	if( PageTranslation.TargetLayerIndex != INDEX_NONE )
+	{
+		if( !VirtualToPhysicalTexel(PageTranslation.TargetLayerIndex, PageTranslation.TargetMipLevel, PixelPos, PixelPos) )
+		{
+			// mapped to non-commited space.
+			return;
+		}
+		PixelPos += PageTranslation.PhysicalOffset;
+	}
+#endif
+
+	WritePixel( OutBuffer, PixelValue, PixelPos, DeviceZ );
+}
