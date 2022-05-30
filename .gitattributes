@@ -1,0 +1,8 @@
+/Mac/Mac/UnrealEditor-RenderCore.dylib filter=lfs diff=lfs merge=lfs -text
+/Mac/Mac/UnrealEditor-RHICore.dylib filter=lfs diff=lfs merge=lfs -text
+/Mac/Mac/UnrealEditor-RHI.dylib filter=lfs diff=lfs merge=lfs -text
+/Mac/Mac/UnrealEditor-Engine.dylib filter=lfs diff=lfs merge=lfs -text
+/Mac/Mac/UnrealEditor-Core.dylib filter=lfs diff=lfs merge=lfs -text
+/Mac/Mac/UnrealEditor-AGXRHI.dylib filter=lfs diff=lfs merge=lfs -text
+/Mac/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor filter=lfs diff=lfs merge=lfs -text
+/Mac/Mac/UnrealEditor-Renderer.dylib filter=lfs diff=lfs merge=lfs -text
